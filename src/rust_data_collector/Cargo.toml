@@ -1,0 +1,16 @@
+[package]
+name = "rust_data_collector"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "rust_data_collector"
+crate-type = ["cdylib"] # For Python interoperability (PyO3)
+
+[dependencies]
+reqwest = { version = "0.11", features = ["json", "blocking"] } # blocking for simplicity now, can switch to async
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] } # For date/time handling
+dotenv = "0.15" # To load .env in Rust
+pyo3 = { version = "0.21", features = ["extension-module", "abi3-py38"] } # For Python binding
