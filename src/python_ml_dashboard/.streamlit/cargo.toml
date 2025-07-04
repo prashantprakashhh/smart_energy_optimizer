@@ -1,9 +1,7 @@
+# src/python_ml_dashboard/.streamlit/config.toml
 [theme]
 primaryColor="#2EC4B6" # Teal for primary accents
 backgroundColor="#0A1128" # Dark blue background (almost black)
 secondaryBackgroundColor="#1D3461" # Slightly lighter dark blue for secondary elements
 textColor="#E0FBFC" # Light cyan for main text
 font="sans serif"
-# You can also use "monospace" or "serif"
-# font = "serif"
-# font = "monospace"

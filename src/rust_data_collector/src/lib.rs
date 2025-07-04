@@ -80,9 +80,47 @@ fn get_openweather_data(api_key: &str, lat: f64, lon: f64) -> Result<OpenWeather
         "https://api.openweathermap.org/data/3.0/onecall?lat={}&lon={}&exclude=minutely,daily,alerts&appid={}&units=metric",
         lat, lon, api_key
     );
+    println!("DEBUG (Rust): OpenWeatherMap API Request URL: {}", url);
     let client = Client::new();
-    let response = client.get(&url).send()?.json::<OpenWeatherOneCallResponse>()?;
-    Ok(response)
+    let response = client.get(&url).send()?; // This sends the request and gets the reqwest::blocking::Response object
+
+    // --- Corrected Debug Block and Error Handling ---
+    let status = response.status(); // Access status BEFORE consuming the response body
+    println!("DEBUG (Rust): OpenWeatherMap Response Status: {}", status);
+
+    // Consume the response body into text
+    let response_text = response.text()?; // .text() consumes the response, so we need to clone if we wanted to read it multiple times (not needed here)
+    println!("DEBUG (Rust): OpenWeatherMap Raw Response (first 500 chars): {}", &response_text[..std::cmp::min(response_text.len(), 500)]);
+
+    // Check for non-200 status codes. reqwest's `error_for_status()` is the idiomatic way.
+    // If the status is 4xx or 5xx, this will convert it into a reqwest::Error.
+    let response_for_status = response_text.clone(); // Clone to use for potential error reporting
+    let mut response_result = Ok(()); // Dummy result to build upon
+
+    // Manually check status and build custom error if not success
+    if !status.is_success() {
+        println!("ERROR (Rust): OpenWeatherMap API returned non-success status {}. Full raw response: {}", status, response_text);
+        return Err(reqwest::Error::builder()
+            .status(status)
+            .text(response_text) // Include the full text for debugging
+            .build());
+    }
+
+    // Now, attempt to deserialize the text
+    let parsed_response: OpenWeatherOneCallResponse = serde_json::from_str(&response_text)
+        .map_err(|e| {
+            // If deserialization fails, print the full response text for more context
+            println!("ERROR (Rust): Failed to deserialize OpenWeatherMap response. Error: {}", e);
+            println!("ERROR (Rust): Full raw response was: {}", response_text); // CRUCIAL: Full response on error
+            
+            // Build a reqwest::Error for deserialization failure using its builder.
+            // reqwest::Error::builder().build() creates a generic error.
+            reqwest::Error::builder()
+                .text(response_text) // Include the response text for debugging
+                .build() // This creates a generic reqwest::Error, kind will be "Unknown"
+        })?;
+
+    Ok(parsed_response)
 }
 
 // For SMARD, we will fetch data for the last 48 hours for demonstration.
@@ -128,8 +166,15 @@ fn get_smard_day_ahead_prices(
 fn fetch_and_save_data(data_dir: &str, lat: f64, lon: f64) -> PyResult<String> {
     dotenv().ok(); // Load .env file
 
+    println!("DEBUG (Rust): Attempting to load OPENWEATHER_API_KEY...");
     let openweather_api_key = env::var("OPENWEATHER_API_KEY")
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("OPENWEATHER_API_KEY not set: {}", e)))?;
+    .map_err(|e| {
+        // This line will print to the terminal where Streamlit is running if the key is not found
+        println!("ERROR (Rust): OPENWEATHER_API_KEY not found or invalid. Error details: {}", e);
+        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("OPENWEATHER_API_KEY not set: {}", e))
+    })?;
+    println!("DEBUG (Rust): OPENWEATHER_API_KEY successfully loaded.");
+    
     // SMARD API keys are commented out in .env and config.py as per our findings for public data.
     let smard_base_url = "https://www.smard.de/app/chart_data";
     let smard_price_filter = "1001";

@@ -4,23 +4,19 @@ from datetime import datetime, time
 import numpy as np
 from typing import Dict, Any
 
-# Placeholder for a more complex ML model later
 def predict_future_energy_profile(df: pd.DataFrame) -> pd.DataFrame:
     """
     Placeholder: In a real scenario, this would forecast future electricity
     prices, solar generation, and perhaps household demand.
-    For now, it uses the fetched data as "future" data.
+    For now, it simply returns the fetched data.
     """
-    # This function simply returns the input DataFrame,
-    # treating current/historical fetched data as "forecast" for demo.
-    # Future enhancement: train ML models to predict these values for days ahead.
     return df.copy()
 
 def make_smart_decisions(
     df_forecast: pd.DataFrame,
     user_prefs: Dict[str, Any],
-    solar_panel_output_kw_peak: float = 5.0, # Example: 5 kWp solar system
-    house_base_consumption_kw: float = 0.3 # Example: constant base load
+    solar_panel_output_kw_peak: float = 5.0, # Example: 5 kWp solar system capacity
+    house_base_consumption_kw: float = 0.3 # Example: constant base load of the house
 ) -> pd.DataFrame:
     """
     Makes smart recommendations based on forecasted data and user preferences.
@@ -29,11 +25,9 @@ def make_smart_decisions(
     recommendations_df = df_forecast.copy()
 
     # Calculate estimated solar generation (simple heuristic)
-    # This needs to be replaced by actual solar data or a robust PV model.
-    # For now: Solar potential (0-1) * peak capacity.
     recommendations_df['estimated_solar_generation_kw'] = recommendations_df['solar_potential'] * solar_panel_output_kw_peak
 
-    # Calculate net consumption/production
+    # Calculate net consumption/production *before* major appliances/EV
     recommendations_df['net_grid_demand_kw'] = (
         house_base_consumption_kw
         - recommendations_df['estimated_solar_generation_kw']
@@ -43,7 +37,7 @@ def make_smart_decisions(
     recommendations_df['charge_ev'] = False
     recommendations_df['run_dishwasher'] = False
     recommendations_df['run_washing_machine'] = False
-    recommendations_df['sell_to_grid'] = False # True if we have excess power to sell
+    recommendations_df['sell_to_grid'] = False
     recommendations_df['reason'] = ''
 
     # Get user preferences
@@ -53,65 +47,76 @@ def make_smart_decisions(
     dishwasher_power_kw = user_prefs['DISHWASHER_POWER_KW']
     washing_machine_power_kw = user_prefs['WASHING_MACHINE_POWER_KW']
 
-    # Sort by price to prioritize cheapest times
     # Make decisions for each hour
     for index, row in recommendations_df.iterrows():
         current_time = index.time()
         current_price = row['price_eur_kwh']
-        net_demand_before_appliances = row['net_grid_demand_kw']
         solar_available = row['estimated_solar_generation_kw']
         is_working_hours = working_hours_start <= current_time < working_hours_end
 
         hour_reasons = []
+        actions_taken = {} # Track actions for current hour to avoid double-claiming solar
 
-        # Decision Logic Priority:
-        # 1. Self-consume solar or sell excess if profitable
-        # 2. Charge EV during cheapest or excess solar hours (outside working hours)
-        # 3. Run appliances during cheapest or excess solar hours
+        # --- Priority 1: Maximize Self-Consumption & Smart Selling ---
+        # If we have excess solar
+        if solar_available > 0.05: # Small threshold to ignore tiny amounts
+            # If solar generation exceeds base consumption, consider selling or using for high-load items
+            net_after_base = solar_available - house_base_consumption_kw
 
-        # --- Self-consumption / Selling to Grid ---
-        if solar_available > 0:
-            # If we have excess solar, try to use it or sell it
-            if net_demand_before_appliances < 0: # We are generating more than base consumption
+            # Consider running appliances or EV first with excess solar
+            if net_after_base > dishwasher_power_kw * 0.7 and not actions_taken.get('dishwasher'):
+                recommendations_df.loc[index, 'run_dishwasher'] = True
+                hour_reasons.append(f"Running Dishwasher with excess solar ({net_after_base:.2f}kW available).")
+                actions_taken['dishwasher'] = True
+                net_after_base -= dishwasher_power_kw
+
+            if net_after_base > washing_machine_power_kw * 0.7 and not actions_taken.get('washing_machine'):
+                recommendations_df.loc[index, 'run_washing_machine'] = True
+                hour_reasons.append(f"Running Washing Machine with excess solar ({net_after_base:.2f}kW available).")
+                actions_taken['washing_machine'] = True
+                net_after_base -= washing_machine_power_kw
+
+            if not is_working_hours and net_after_base > ev_charge_power_kw * 0.5 and not actions_taken.get('ev'):
+                recommendations_df.loc[index, 'charge_ev'] = True
+                hour_reasons.append(f"Charging EV with excess solar ({net_after_base:.2f}kW available).")
+                actions_taken['ev'] = True
+                net_after_base -= ev_charge_power_kw
+
+            # Sell remaining excess solar if it's significant and price is good
+            # Arbitrary threshold for selling price (e.g., above 10% of max price)
+            max_price = recommendations_df['price_eur_kwh'].max()
+            sell_price_threshold = max_price * 0.1 # Example: only sell if price is > 10% of max observed price
+            if net_after_base > 0.1 and current_price >= sell_price_threshold: # Check if there's significant excess
                 recommendations_df.loc[index, 'sell_to_grid'] = True
-                hour_reasons.append(f"Excess solar ({solar_available:.2f}kW) available to sell.")
-                # Deduct from net_demand if selling
-                net_demand_after_selling = net_demand_before_appliances
-            else: # Solar is just covering base consumption
-                hour_reasons.append(f"Solar ({solar_available:.2f}kW) covering base consumption.")
-        
-        # --- EV Charging ---
-        # Prioritize EV charging when price is low AND not during working hours
-        # Or when there's significant excess solar power
-        # Simple heuristic: charge if price is in the lowest quartile OR if solar available is high
-        price_quartile_threshold = recommendations_df['price_eur_kwh'].quantile(0.25)
-        # Assuming we want to charge the EV to a target, this needs state management.
-        # For simplicity, let's assume we want to charge the EV when conditions are good.
-        
-        if not is_working_hours and (current_price <= price_quartile_threshold or solar_available > ev_charge_power_kw * 0.5): # e.g., if solar covers half EV power
-            if net_demand_before_appliances - ev_charge_power_kw < 0: # If solar can cover EV charge + base load
-                 recommendations_df.loc[index, 'charge_ev'] = True
-                 recommendations_df.loc[index, 'sell_to_grid'] = False # Don't sell if charging EV with solar
-                 hour_reasons.append(f"Charging EV using solar/cheap power (price: {current_price:.4f} EUR/kWh).")
-            elif current_price <= price_quartile_threshold: # Charge purely based on low price
-                 recommendations_df.loc[index, 'charge_ev'] = True
-                 hour_reasons.append(f"Charging EV at low grid price ({current_price:.4f} EUR/kWh).")
+                hour_reasons.append(f"Selling {net_after_base:.2f}kW excess solar at good price ({current_price:.4f} €/kWh).")
+            elif net_after_base > 0.1:
+                hour_reasons.append(f"Excess solar ({net_after_base:.2f}kW) available, but selling price not optimal.")
 
 
-        # --- Appliance Running (Dishwasher, Washing Machine) ---
-        # Prioritize when price is very low or when there's excess solar
-        appliance_threshold = recommendations_df['price_eur_kwh'].quantile(0.15) # Even lower threshold for appliances
-        
-        if not recommendations_df.loc[index, 'charge_ev']: # Don't conflict with EV if EV is priority
-            if current_price <= appliance_threshold or solar_available > washing_machine_power_kw * 0.7:
-                 recommendations_df.loc[index, 'run_washing_machine'] = True
-                 hour_reasons.append(f"Running Washing Machine at low price/excess solar.")
+        # --- Priority 2: Use Low Grid Price for Appliances/EV (if not using solar) ---
+        # Identify cheapest 25% of hours for grid power
+        price_quartile_threshold_ev = recommendations_df['price_eur_kwh'].quantile(0.25)
+        price_quartile_threshold_appliance = recommendations_df['price_eur_kwh'].quantile(0.15) # Even cheaper for appliances
 
-            if current_price <= appliance_threshold or solar_available > dishwasher_power_kw * 0.7:
-                 recommendations_df.loc[index, 'run_dishwasher'] = True
-                 hour_reasons.append(f"Running Dishwasher at low price/excess solar.")
+        # Charge EV if not during working hours AND price is low, AND not already decided to charge with solar
+        if not is_working_hours and current_price <= price_quartile_threshold_ev and not actions_taken.get('ev'):
+            recommendations_df.loc[index, 'charge_ev'] = True
+            hour_reasons.append(f"Charging EV at low grid price ({current_price:.4f} €/kWh).")
+            actions_taken['ev'] = True
+
+        # Run Washing Machine if price is very low and not already decided for solar
+        if current_price <= price_quartile_threshold_appliance and not actions_taken.get('washing_machine'):
+            recommendations_df.loc[index, 'run_washing_machine'] = True
+            hour_reasons.append(f"Running Washing Machine at very low grid price ({current_price:.4f} €/kWh).")
+            actions_taken['washing_machine'] = True
+
+        # Run Dishwasher if price is very low and not already decided for solar
+        if current_price <= price_quartile_threshold_appliance and not actions_taken.get('dishwasher'):
+            recommendations_df.loc[index, 'run_dishwasher'] = True
+            hour_reasons.append(f"Running Dishwasher at very low grid price ({current_price:.4f} €/kWh).")
+            actions_taken['dishwasher'] = True
 
         # Combine reasons
-        recommendations_df.loc[index, 'reason'] = "; ".join(hour_reasons)
+        recommendations_df.loc[index, 'reason'] = "; ".join(hour_reasons) if hour_reasons else "No specific action recommended."
 
     return recommendations_df

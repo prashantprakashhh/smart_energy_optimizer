@@ -40,12 +40,9 @@ def load_weather_data(filepath: str) -> pd.DataFrame:
     hourly_df['pop'] = hourly_df['pop'] # Probability of precipitation
 
     # Create a simplified 'solar_potential' heuristic (can be replaced by real data)
-    # This is a very rough estimate.
-    # Solar potential is higher with less clouds, higher sun angle (time of day).
-    # We'll use a simple inverse of cloudiness, scaled by a rough day-night cycle.
     hourly_df['hour_of_day'] = hourly_df.index.hour
     hourly_df['day_period_factor'] = hourly_df['hour_of_day'].apply(
-        lambda h: max(0, -0.05 * (h - 12)**2 + 1.0) # Peak at noon, zero at 0/24
+        lambda h: max(0, -0.05 * (h - 12)**2 + 1.0) # Peak at noon, zero at 0/24 (simple parabola)
     )
     hourly_df['solar_potential'] = (100 - hourly_df['cloudiness_percent']) / 100 * hourly_df['day_period_factor']
     hourly_df['solar_potential'] = hourly_df['solar_potential'].clip(0, 1) # Ensure 0-1 range
@@ -71,11 +68,11 @@ def get_combined_data(data_dir: str) -> pd.DataFrame:
     return combined_df
 
 if __name__ == "__main__":
-    # Example usage (for testing)
-    # Ensure you have some data in ../../data/smard_prices.json and ../../data/weather_data.json
-    # You'll need to run the Rust data collector first.
     from config import DATA_DIR
     print(f"Attempting to load data from: {DATA_DIR}")
+    # Make sure you've run the Rust data collector first to create these files
+    # import rust_data_collector # This won't work in __main__ directly, needs sys.path setup
+    # rust_data_collector.fetch_and_save_data(DATA_DIR, 49.4875, 8.4660)
     combined_df = get_combined_data(DATA_DIR)
     print("Combined Data Head:")
     print(combined_df.head())

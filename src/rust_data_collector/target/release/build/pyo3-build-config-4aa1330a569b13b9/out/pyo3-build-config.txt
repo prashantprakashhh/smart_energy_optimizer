@@ -1,0 +1,10 @@
+implementation=CPython
+version=3.8
+shared=true
+abi3=true
+lib_name=python3.10
+lib_dir=/Users/prashantsingh/.pyenv/versions/3.10.9/lib
+executable=/Users/prashantsingh/Downloads/AIML/smart_energy_optimizer/.venv/bin/python3
+pointer_width=64
+build_flags=
+suppress_build_script_link_lines=false
