@@ -1,0 +1,1 @@
+/Users/prashantsingh/Downloads/AIML/smart_energy_optimizer/src/rust_data_collector/target/release/librust_data_collector.dylib: /Users/prashantsingh/Downloads/AIML/smart_energy_optimizer/src/rust_data_collector/src/lib.rs

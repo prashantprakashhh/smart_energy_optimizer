@@ -1,221 +1,204 @@
-// src/rust_data_collector/src/lib.rs
-
-use reqwest::blocking::Client;
-use serde::{Deserialize, Serialize};
-use chrono::{Utc, Duration};
+use chrono::{Duration, Utc};
 use dotenv::dotenv;
-use std::env;
-use std::fs;
-use std::path::Path;
 use pyo3::prelude::*;
+use reqwest;
+use serde::{Deserialize, Serialize};
+use serde_json;
+use std::collections::HashMap;
+use std::env;
+use std::error::Error as StdError;
+use std::fmt;
+use std::fs::{self, OpenOptions};
+use std::path::Path;
+use csv;
 
-// --- Data Structures for API Responses ---
-
-// OpenWeatherMap Current Weather (simplified)
-#[derive(Debug, Serialize, Deserialize)]
-pub struct OpenWeatherCurrent {
-    pub main: OpenWeatherMain,
-    pub weather: Vec<OpenWeatherWeather>,
-    pub dt: i64, // Unix timestamp
+// --- Custom Error Handling ---
+#[derive(Debug)]
+enum AppError {
+    Request(reqwest::Error),
+    Api(String),
+    Json(serde_json::Error),
+    Io(std::io::Error),
+    Env(env::VarError),
+    Csv(csv::Error),
 }
 
-#[derive(Debug, Serialize, Deserialize)]
-pub struct OpenWeatherMain {
-    pub temp: f64,
-    pub feels_like: f64,
-    pub humidity: i32,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct OpenWeatherWeather {
-    pub description: String,
-    pub icon: String,
-}
-
-// OpenWeatherMap Hourly Forecast (simplified)
-#[derive(Debug, Serialize, Deserialize)]
-pub struct OpenWeatherHourlyForecast {
-    pub dt: i64, // Unix timestamp
-    pub temp: f64,
-    pub weather: Vec<OpenWeatherWeather>,
-    pub pop: f64, // Probability of precipitation
-    pub clouds: OpenWeatherClouds,
-    // Note: OpenWeatherMap's hourly forecast doesn't directly give solar irradiance
-    // For a more accurate solar prediction, a dedicated solar API (like Solcast, Meteotest)
-    // or a sophisticated solar model based on cloud cover, time of day, season, etc., is needed.
-    // For now, we'll just get general weather.
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct OpenWeatherClouds {
-    pub all: i32, // Cloudiness, %
-}
-
-// Wrapper for OpenWeatherMap One Call API response
-#[derive(Debug, Serialize, Deserialize)]
-pub struct OpenWeatherOneCallResponse {
-    pub current: OpenWeatherCurrent,
-    pub hourly: Vec<OpenWeatherHourlyForecast>,
-    // daily, alerts, minutely etc. can be added if needed
-}
-
-// SMARD API (Day-ahead auction price)
-// Example SMARD JSON: {"data":[{"timestamp":1672531200000,"value":-0.01},{"timestamp":...}]}
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SmardDataPoint {
-    pub timestamp: i64, // Milliseconds since epoch
-    pub value: f64,     // Price in EUR/MWh
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct SmardApiResponse {
-    pub data: Vec<SmardDataPoint>,
-}
-
-
-// --- Functions to Fetch Data ---
-
-fn get_openweather_data(api_key: &str, lat: f64, lon: f64) -> Result<OpenWeatherOneCallResponse, reqwest::Error> {
-    let url = format!(
-        "https://api.openweathermap.org/data/3.0/onecall?lat={}&lon={}&exclude=minutely,daily,alerts&appid={}&units=metric",
-        lat, lon, api_key
-    );
-    println!("DEBUG (Rust): OpenWeatherMap API Request URL: {}", url);
-    let client = Client::new();
-    let response = client.get(&url).send()?; // This sends the request and gets the reqwest::blocking::Response object
-
-    // --- Corrected Debug Block and Error Handling ---
-    let status = response.status(); // Access status BEFORE consuming the response body
-    println!("DEBUG (Rust): OpenWeatherMap Response Status: {}", status);
-
-    // Consume the response body into text
-    let response_text = response.text()?; // .text() consumes the response, so we need to clone if we wanted to read it multiple times (not needed here)
-    println!("DEBUG (Rust): OpenWeatherMap Raw Response (first 500 chars): {}", &response_text[..std::cmp::min(response_text.len(), 500)]);
-
-    // Check for non-200 status codes. reqwest's `error_for_status()` is the idiomatic way.
-    // If the status is 4xx or 5xx, this will convert it into a reqwest::Error.
-    let response_for_status = response_text.clone(); // Clone to use for potential error reporting
-    let mut response_result = Ok(()); // Dummy result to build upon
-
-    // Manually check status and build custom error if not success
-    if !status.is_success() {
-        println!("ERROR (Rust): OpenWeatherMap API returned non-success status {}. Full raw response: {}", status, response_text);
-        return Err(reqwest::Error::builder()
-            .status(status)
-            .text(response_text) // Include the full text for debugging
-            .build());
+impl fmt::Display for AppError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match *self {
+            AppError::Request(ref err) => write!(f, "HTTP Request Error: {}", err),
+            AppError::Api(ref msg) => write!(f, "API Error: {}", msg),
+            AppError::Json(ref err) => write!(f, "JSON Deserialization Error: {}", err),
+            AppError::Io(ref err) => write!(f, "File I/O Error: {}", err),
+            AppError::Env(ref err) => write!(f, "Environment Variable Error: {}", err),
+            AppError::Csv(ref err) => write!(f, "CSV Logging Error: {}", err),
+        }
     }
-
-    // Now, attempt to deserialize the text
-    let parsed_response: OpenWeatherOneCallResponse = serde_json::from_str(&response_text)
-        .map_err(|e| {
-            // If deserialization fails, print the full response text for more context
-            println!("ERROR (Rust): Failed to deserialize OpenWeatherMap response. Error: {}", e);
-            println!("ERROR (Rust): Full raw response was: {}", response_text); // CRUCIAL: Full response on error
-            
-            // Build a reqwest::Error for deserialization failure using its builder.
-            // reqwest::Error::builder().build() creates a generic error.
-            reqwest::Error::builder()
-                .text(response_text) // Include the response text for debugging
-                .build() // This creates a generic reqwest::Error, kind will be "Unknown"
-        })?;
-
-    Ok(parsed_response)
+}
+impl StdError for AppError {}
+impl From<reqwest::Error> for AppError { fn from(err: reqwest::Error) -> Self { Self::Request(err) } }
+impl From<serde_json::Error> for AppError { fn from(err: serde_json::Error) -> Self { Self::Json(err) } }
+impl From<std::io::Error> for AppError { fn from(err: std::io::Error) -> Self { Self::Io(err) } }
+impl From<env::VarError> for AppError { fn from(err: env::VarError) -> Self { Self::Env(err) } }
+impl From<csv::Error> for AppError { fn from(err: csv::Error) -> Self { Self::Csv(err) } }
+impl From<AppError> for PyErr {
+    fn from(err: AppError) -> PyErr {
+        pyo3::exceptions::PyValueError::new_err(err.to_string())
+    }
 }
 
-// For SMARD, we will fetch data for the last 48 hours for demonstration.
-// SMARD API data URLs are typically structured like this for 'Day-ahead auction price' (filter 1001):
-// https://www.smard.de/app/chart_data/1001/DE/index_hour.json
-// This index_hour.json gives the current state of hourly data.
-// For historical ranges, you might need to use `table_data` or download CSVs,
-// but for a live system, the `index_hour.json` is typically updated regularly.
-// Let's simulate fetching for a specific time range to make it more robust.
-// SMARD timestamps are in milliseconds.
-fn get_smard_day_ahead_prices(
-    base_url: &str,
-    filter: &str,
-    region: &str,
-    resolution: &str,
-    start_timestamp_ms: i64,
-    end_timestamp_ms: i64
-) -> Result<SmardApiResponse, reqwest::Error> {
-    // SMARD's chart_data endpoint doesn't support direct time range queries.
-    // It provides data up to "index_hour.json".
-    // To get historical data, one typically downloads CSVs from their "Data download" section.
-    // For continuous fetching, you would periodically hit `index_hour.json` and append.
-    // For this example, let's hardcode a URL for a recent period or use the general index.
-    // A robust solution would involve checking the latest timestamp and fetching new data.
-    
-    // For simplicity, let's fetch the general hourly index, which usually contains recent data.
-    // Note: The specific URL format for historical data ranges might differ or require manual download.
-    let url = format!("{}/{}/{}/index_{}.json", base_url, filter, region, resolution);
-    println!("Fetching SMARD data from: {}", url); // Debug print
-    let client = Client::new();
-    let response = client.get(&url).send()?.json::<SmardApiResponse>()?;
+// --- API & Plan Data Structures ---
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct AwattarPricePoint {
+    start_timestamp: i64,
+    end_timestamp: i64,
+    marketprice: f64,
+}
+#[derive(Serialize, Deserialize, Debug)]
+struct AwattarPriceResponse { data: Vec<AwattarPricePoint> }
+#[derive(Serialize, Deserialize, Debug)]
+struct OpenWeatherOneCallResponse { hourly: Vec<HourlyWeather> }
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct HourlyWeather {
+    dt: i64,
+    temp: f64,
+    weather: Vec<WeatherCondition>,
+}
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct WeatherCondition { main: String }
 
-    // Filter data by timestamp in Rust, as SMARD `index_hour.json` returns all available data.
-    let filtered_data: Vec<SmardDataPoint> = response.data.into_iter()
-        .filter(|dp| dp.timestamp >= start_timestamp_ms && dp.timestamp <= end_timestamp_ms)
-        .collect();
-
-    Ok(SmardApiResponse { data: filtered_data })
+#[derive(Serialize)]
+struct HistoryLogEntry {
+    timestamp: i64,
+    price_eur_kwh: f64,
+    temp: f64,
+    weather_condition: String,
 }
 
-// --- Python Bindings ---
-#[pyfunction]
-fn fetch_and_save_data(data_dir: &str, lat: f64, lon: f64) -> PyResult<String> {
-    dotenv().ok(); // Load .env file
+#[derive(Serialize, Deserialize, Debug)]
+struct AppliancePlan {
+    start_time: i64,
+    price: f64,
+    reason: String,
+}
+#[derive(Serialize, Deserialize, Debug)]
+struct TrainedPlan {
+    ev_charge: AppliancePlan,
+    washing_machine: AppliancePlan,
+    dishwasher: AppliancePlan,
+    best_time_to_sell: AppliancePlan,
+}
 
-    println!("DEBUG (Rust): Attempting to load OPENWEATHER_API_KEY...");
-    let openweather_api_key = env::var("OPENWEATHER_API_KEY")
-    .map_err(|e| {
-        // This line will print to the terminal where Streamlit is running if the key is not found
-        println!("ERROR (Rust): OPENWEATHER_API_KEY not found or invalid. Error details: {}", e);
-        PyErr::new::<pyo3::exceptions::PyValueError, _>(format!("OPENWEATHER_API_KEY not set: {}", e))
-    })?;
-    println!("DEBUG (Rust): OPENWEATHER_API_KEY successfully loaded.");
-    
-    // SMARD API keys are commented out in .env and config.py as per our findings for public data.
-    let smard_base_url = "https://www.smard.de/app/chart_data";
-    let smard_price_filter = "1001";
-    let smard_region = "DE";
-    let smard_resolution = "hour";
+// --- Data Logging & Fetching Logic ---
+fn log_data_to_history(prices: &AwattarPriceResponse, weather: &OpenWeatherOneCallResponse) -> Result<(), AppError> {
+    let path = Path::new("data/history.csv");
+    let file_exists = path.exists();
+    let file = OpenOptions::new().write(true).create(true).append(true).open(path)?;
+    let mut wtr = csv::Writer::from_writer(file);
+    if !file_exists {
+        wtr.write_record(&["timestamp", "price_eur_kwh", "temp", "weather_condition"])?;
+    }
+    for price_point in &prices.data {
+        if let Some(weather_hour) = weather.hourly.iter().find(|w| w.dt * 1000 >= price_point.start_timestamp && w.dt * 1000 < price_point.end_timestamp) {
+            wtr.serialize(HistoryLogEntry {
+                timestamp: price_point.start_timestamp,
+                price_eur_kwh: price_point.marketprice / 1000.0,
+                temp: weather_hour.temp,
+                weather_condition: weather_hour.weather[0].main.clone(),
+            })?;
+        }
+    }
+    wtr.flush()?;
+    Ok(())
+}
 
+fn get_awattar_price_data() -> Result<AwattarPriceResponse, AppError> {
     let now = Utc::now();
-    let end_timestamp_ms = now.timestamp_millis();
-    let start_timestamp_ms = (now - Duration::hours(48)).timestamp_millis(); // Last 48 hours
-
-    // Fetch OpenWeatherMap data
-    println!("Fetching OpenWeatherMap data...");
-    let weather_data = get_openweather_data(&openweather_api_key, lat, lon)
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(format!("Failed to fetch OpenWeatherMap data: {}", e)))?;
-    let weather_path = Path::new(data_dir).join("weather_data.json");
-    fs::write(&weather_path, serde_json::to_string_pretty(&weather_data).unwrap())
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(format!("Failed to write weather data: {}", e)))?;
-    println!("OpenWeatherMap data saved to {:?}", weather_path);
-
-    // Fetch SMARD data
-    println!("Fetching SMARD data...");
-    let smard_data = get_smard_day_ahead_prices(
-        smard_base_url,
-        smard_price_filter,
-        smard_region,
-        smard_resolution,
-        start_timestamp_ms,
-        end_timestamp_ms
-    )
-    .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(format!("Failed to fetch SMARD data: {}", e)))?;
-    let smard_path = Path::new(data_dir).join("smard_prices.json");
-    fs::write(&smard_path, serde_json::to_string_pretty(&smard_data).unwrap())
-        .map_err(|e| PyErr::new::<pyo3::exceptions::PyIOError, _>(format!("Failed to write SMARD data: {}", e)))?;
-    println!("SMARD data saved to {:?}", smard_path);
-
-    Ok("Data fetching complete.".to_string())
+    let start_timestamp = (now - Duration::days(1)).timestamp_millis();
+    let end_timestamp = (now + Duration::days(1)).timestamp_millis();
+    let url = format!("https://api.awattar.de/v1/marketdata?start={}&end={}", start_timestamp, end_timestamp);
+    let response = reqwest::blocking::get(&url)?;
+    if !response.status().is_success() { return Err(AppError::Api(format!("aWATTar API Error: {}", response.status()))); }
+    Ok(response.json()?)
 }
 
-/// A Python module implemented in Rust.
+fn get_openweather_data(api_key: &str, lat: f64, lon: f64) -> Result<OpenWeatherOneCallResponse, AppError> {
+    let url = format!("https://api.openweathermap.org/data/3.0/onecall?lat={}&lon={}&appid={}&units=metric&exclude=current,minutely,daily,alerts", lat, lon, api_key);
+    let response = reqwest::blocking::get(&url)?;
+    if !response.status().is_success() { return Err(AppError::Api(format!("OpenWeatherMap API Error: {}", response.status()))); }
+    Ok(response.json()?)
+}
+
+fn find_best_window(prices: &[AwattarPricePoint], duration_hours: usize, available_slots: &mut HashMap<i64, bool>) -> (usize, f64) {
+    let mut best_avg_price = f64::MAX;
+    let mut best_start_index = 0;
+    if prices.len() < duration_hours { return (0, f64::MAX); }
+    for i in 0..=(prices.len() - duration_hours) {
+        let window = &prices[i..i + duration_hours];
+        if window.iter().all(|p| *available_slots.get(&p.start_timestamp).unwrap_or(&false)) {
+            let avg_price: f64 = window.iter().map(|p| p.marketprice).sum::<f64>() / (duration_hours as f64);
+            if avg_price < best_avg_price {
+                best_avg_price = avg_price;
+                best_start_index = i;
+            }
+        }
+    }
+    for i in 0..duration_hours {
+        if let Some(slot) = available_slots.get_mut(&prices[best_start_index + i].start_timestamp) {
+            *slot = false;
+        }
+    }
+    (best_start_index, best_avg_price)
+}
+
+// --- Python Module Functions ---
+#[pyfunction]
+fn fetch_and_save_data(lat: f64, lon: f64) -> PyResult<String> {
+    dotenv().ok();
+    let openweather_api_key = env::var("OPENWEATHER_API_KEY").map_err(AppError::from)?;
+    let price_data = get_awattar_price_data()?;
+    let weather_data = get_openweather_data(&openweather_api_key, lat, lon)?;
+    log_data_to_history(&price_data, &weather_data)?;
+    let data_dir = Path::new("data");
+    fs::create_dir_all(data_dir)?;
+
+    // THIS IS THE FIX: Explicitly map the JSON error to our AppError type
+    fs::write(data_dir.join("openweather_data.json"), serde_json::to_string_pretty(&weather_data).map_err(AppError::from)?)?;
+    fs::write(data_dir.join("awattar_price_data.json"), serde_json::to_string_pretty(&price_data).map_err(AppError::from)?)?;
+    
+    Ok("✅ Data fetched & logged for AI training.".to_string())
+}
+
+#[pyfunction]
+fn create_optimized_plan(ev_charge_duration_hours: u32, washer_duration_hours: u32, dishwasher_duration_hours: u32) -> PyResult<String> {
+    let price_data_str = fs::read_to_string("data/awattar_price_data.json").map_err(AppError::from)?;
+    let price_data: AwattarPriceResponse = serde_json::from_str(&price_data_str).map_err(AppError::from)?;
+    let prices = price_data.data;
+
+    let mut available_slots: HashMap<i64, bool> = prices.iter().map(|p| (p.start_timestamp, true)).collect();
+
+    let (ev_index, ev_price) = find_best_window(&prices, ev_charge_duration_hours as usize, &mut available_slots);
+    let (washer_index, washer_price) = find_best_window(&prices, washer_duration_hours as usize, &mut available_slots);
+    let (dishwasher_index, dishwasher_price) = find_best_window(&prices, dishwasher_duration_hours as usize, &mut available_slots);
+    
+    let best_sell_index = prices.iter().enumerate().max_by(|(_, a), (_, b)| a.marketprice.partial_cmp(&b.marketprice).unwrap()).map(|(index, _)| index).unwrap_or(0);
+
+    let plan = TrainedPlan {
+        ev_charge: AppliancePlan { start_time: prices[ev_index].start_timestamp, price: ev_price / 1000.0, reason: "Lowest price for duration".to_string() },
+        washing_machine: AppliancePlan { start_time: prices[washer_index].start_timestamp, price: washer_price / 1000.0, reason: "Next best price slot".to_string() },
+        dishwasher: AppliancePlan { start_time: prices[dishwasher_index].start_timestamp, price: dishwasher_price / 1000.0, reason: "Next best price slot".to_string() },
+        best_time_to_sell: AppliancePlan { start_time: prices[best_sell_index].start_timestamp, price: prices[best_sell_index].marketprice / 1000.0, reason: "Highest grid price".to_string() },
+    };
+
+    // THIS IS THE FIX: Explicitly map the JSON error to our AppError type
+    fs::write("data/plan.json", serde_json::to_string_pretty(&plan).map_err(AppError::from)?)?;
+    
+    Ok("✅ Optimized multi-appliance plan created.".to_string())
+}
+
 #[pymodule]
-fn rust_data_collector(_py: Python, m: &PyModule) -> PyResult<()> {
+fn rust_data_collector(_py: Python, m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(fetch_and_save_data, m)?)?;
+    m.add_function(wrap_pyfunction!(create_optimized_plan, m)?)?;
     Ok(())
 }
