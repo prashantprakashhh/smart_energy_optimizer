@@ -3,6 +3,5 @@
 __pycache__/
 *.pyc
 data/
-target/ # Rust build output
+target/
 *.log
-/target/

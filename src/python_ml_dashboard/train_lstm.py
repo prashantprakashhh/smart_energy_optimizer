@@ -1,198 +1,313 @@
-# import numpy as np
 # import pandas as pd
-# import tensorflow as tf
-# from sklearn.model_selection import train_test_split
+# import numpy as np
+# import os
+# import sys
+# import json
+# import pytz
 # from sklearn.preprocessing import MinMaxScaler, LabelEncoder
-
-# # --- 1. Configuration ---
-# SEQUENCE_LENGTH = 24  # Use 24 hours of past data to predict the next hour
-# MODEL_SAVE_PATH = 'lstm_energy_model.h5'
-# DATA_PATH = 'generated_training_data.csv'
-
-# # --- 2. Load and Preprocess Data ---
-# print("Loading and preprocessing data...")
-# df = pd.read_csv(DATA_PATH)
-
-# # Encode the 'action' labels into numbers
-# label_encoder = LabelEncoder()
-# df['action_encoded'] = label_encoder.fit_transform(df['action'])
-# NUM_CLASSES = len(label_encoder.classes_)
-# print(f"Found {NUM_CLASSES} unique actions: {label_encoder.classes_}")
-
-# # Scale numerical features to be between 0 and 1
-# scaler = MinMaxScaler()
-# df[['price', 'solar_potential']] = scaler.fit_transform(df[['price', 'solar_potential']])
-
-# # --- 3. Create Sequences ---
-# print(f"Creating sequences with length {SEQUENCE_LENGTH}...")
-# features = df[['price', 'solar_potential']].values
-# labels = df['action_encoded'].values
-
-# X, y = [], []
-# for i in range(len(features) - SEQUENCE_LENGTH):
-#     X.append(features[i:i + SEQUENCE_LENGTH])
-#     y.append(labels[i + SEQUENCE_LENGTH])
-
-# X = np.array(X)
-# y = tf.keras.utils.to_categorical(y, num_classes=NUM_CLASSES) # One-hot encode labels
-
-# # --- 4. Split Data ---
-# X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
-# print(f"Training data shape: {X_train.shape}")
-# print(f"Validation data shape: {X_val.shape}")
-
-
-# # --- 5. Build the LSTM Model ---
-# print("Building the LSTM model...")
-# model = tf.keras.Sequential([
-#     tf.keras.layers.LSTM(
-#         units=50,
-#         return_sequences=True,
-#         input_shape=(X_train.shape[1], X_train.shape[2]) # (SEQUENCE_LENGTH, num_features)
-#     ),
-#     tf.keras.layers.Dropout(0.2),
-#     tf.keras.layers.LSTM(units=50),
-#     tf.keras.layers.Dropout(0.2),
-#     tf.keras.layers.Dense(units=30, activation='relu'),
-#     tf.keras.layers.Dense(NUM_CLASSES, activation='softmax') # Output layer: probabilities for each action
-# ])
-
-# model.compile(
-#     optimizer='adam',
-#     loss='categorical_crossentropy', # Good for multi-class classification
-#     metrics=['accuracy']
-# )
-# model.summary()
-
-# # --- 6. Train the Model ---
-# print("Training the model...")
-# history = model.fit(
-#     X_train, y_train,
-#     epochs=50, # Adjust as needed
-#     batch_size=32,
-#     validation_data=(X_val, y_val),
-#     verbose=1
-# )
-
-# # --- 7. Save the Trained Model ---
-# print(f"Saving model to {MODEL_SAVE_PATH}...")
-# model.save(MODEL_SAVE_PATH)
-# print("Training complete and model saved! 🎉")
-
-# # You can also save the label encoder and scaler for later use in the app
+# from sklearn.model_selection import train_test_split
+# import tensorflow as tf
+# from tensorflow.keras.models import Sequential
+# from tensorflow.keras.layers import LSTM, Dense, Dropout
+# from tensorflow.keras.callbacks import EarlyStopping
 # import pickle
-# with open('label_encoder.pkl', 'wb') as f:
-#     pickle.dump(label_encoder, f)
-# with open('scaler.pkl', 'wb') as f:
-#     pickle.dump(scaler, f)
 
-import os
-import pickle
-import numpy as np
+# # --- Path Setup ---
+# def setup_path():
+#     current_dir = os.path.dirname(os.path.abspath(__file__))
+#     project_root = os.path.abspath(os.path.join(current_dir, '..', '..'))
+#     if project_root not in sys.path:
+#         sys.path.insert(0, project_root)
+
+# setup_path()
+
+# # --- Configuration ---
+# GERMAN_TIMEZONE = pytz.timezone('Europe/Berlin')
+# DATA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'data')
+# MODEL_SAVE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'lstm_energy_model.h5')
+# SCALER_SAVE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'scaler.pkl')
+# ENCODER_SAVE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'label_encoder.pkl')
+# SEQUENCE_LENGTH = 24  # Use 24 hours of data to predict the next hour
+
+# # --- Data Loading and Preprocessing ---
+# def load_and_prepare_data():
+#     """Loads, merges, and preprocesses the weather and price data."""
+#     price_file = os.path.join(DATA_DIR, "awattar_price_data.json")
+#     weather_file = os.path.join(DATA_DIR, "openweather_data.json")
+
+#     if not os.path.exists(price_file) or not os.path.exists(weather_file):
+#         print("❌ Error: Data files not found. Please run the data fetcher first.")
+#         sys.exit(1)
+
+#     # Load and process price data
+#     with open(price_file, 'r') as f:
+#         price_data = json.load(f)['data']
+#     price_df = pd.DataFrame(price_data)
+#     price_df['timestamp'] = pd.to_datetime(price_df['start_timestamp'], unit='ms', utc=True).dt.tz_convert(GERMAN_TIMEZONE)
+#     price_df['price_eur_kwh'] = price_df['marketprice'] / 1000.0
+#     price_df = price_df.set_index('timestamp')[['price_eur_kwh']]
+
+#     # Load and process weather data
+#     with open(weather_file, 'r') as f:
+#         weather_data = json.load(f)['hourly']
+#     weather_df = pd.DataFrame(weather_data)
+#     weather_df['timestamp'] = pd.to_datetime(weather_df['dt'], unit='s', utc=True).dt.tz_convert(GERMAN_TIMEZONE)
+#     weather_df['weather_condition'] = weather_df['weather'].apply(lambda x: x[0]['main'])
+    
+#     # Calculate solar potential
+#     max_solar_kw = 5.5
+#     weather_coeffs = {'Clear': 1.0, 'Clouds': 0.6, 'Rain': 0.3, 'Mist': 0.35, 'Fog': 0.2, 'Snow': 0.25, 'Drizzle': 0.4, 'Thunderstorm': 0.1}
+#     sunlight_factor = np.sin(np.pi * (weather_df['timestamp'].dt.hour - 6) / 12).clip(0, 1)
+#     weather_factor = weather_df['weather_condition'].map(weather_coeffs).fillna(0.5)
+#     weather_df['solar_potential'] = max_solar_kw * sunlight_factor * weather_factor
+#     weather_df = weather_df.set_index('timestamp')[['solar_potential']]
+
+#     # Combine data
+#     df = price_df.join(weather_df, how='inner').ffill().dropna()
+#     print("✅ Data loaded and merged.")
+#     return df
+
+# def create_labels(df):
+#     """Creates target labels based on price and solar potential."""
+#     conditions = [
+#         (df['price_eur_kwh'] <= df['price_eur_kwh'].quantile(0.25)),  # Cheap price -> Charge EV
+#         (df['price_eur_kwh'] >= df['price_eur_kwh'].quantile(0.80)) & (df['solar_potential'] >= df['solar_potential'].quantile(0.75)), # Expensive & Sunny -> Sell
+#         (df['solar_potential'] >= df['solar_potential'].quantile(0.75)) # Just sunny -> Charge Solar
+#     ]
+#     choices = ['Charge EV', 'Sell to Grid', 'Charge Solar']
+#     df['action'] = np.select(conditions, choices, default='Do Nothing')
+#     print("✅ Target labels created.")
+#     return df
+
+# def create_sequences(df, features, target, sequence_length):
+#     """Creates sequences of data for LSTM training."""
+#     X, y = [], []
+#     for i in range(len(df) - sequence_length):
+#         X.append(df[features].iloc[i:i + sequence_length].values)
+#         y.append(df[target].iloc[i + sequence_length])
+#     print(f"✅ Created {len(X)} sequences.")
+#     return np.array(X), np.array(y)
+
+# # --- Model Training ---
+# def build_and_train_model(X_train, y_train_encoded, X_val, y_val_encoded, num_classes):
+#     """Builds and trains the LSTM model."""
+#     model = Sequential([
+#         LSTM(units=50, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])),
+#         Dropout(0.2),
+#         LSTM(units=50),
+#         Dropout(0.2),
+#         Dense(units=25, activation='relu'),
+#         Dense(units=num_classes, activation='softmax') # Softmax for multi-class classification
+#     ])
+    
+#     model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+    
+#     early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+    
+#     print("\n🚀 Starting model training...")
+#     history = model.fit(
+#         X_train, y_train_encoded,
+#         epochs=50,
+#         batch_size=32,
+#         validation_data=(X_val, y_val_encoded),
+#         callbacks=[early_stopping],
+#         verbose=1
+#     )
+#     print("✅ Model training complete.")
+#     return model
+
+# # --- Main Execution ---
+# if __name__ == "__main__":
+#     # 1. Prepare Data
+#     main_df = load_and_prepare_data()
+#     main_df = create_labels(main_df)
+    
+#     # 2. Feature Scaling and Encoding
+#     features_to_scale = ['price_eur_kwh', 'solar_potential']
+#     scaler = MinMaxScaler()
+#     main_df[features_to_scale] = scaler.fit_transform(main_df[features_to_scale])
+    
+#     encoder = LabelEncoder()
+#     main_df['action_encoded'] = encoder.fit_transform(main_df['action'])
+    
+#     # 3. Create Sequences
+#     X, y = create_sequences(main_df, features_to_scale, 'action_encoded', SEQUENCE_LENGTH)
+    
+#     # 4. Split Data
+#     X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+#     print(f"Data split: {len(X_train)} training samples, {len(X_val)} validation samples.")
+    
+#     # 5. Build and Train Model
+#     num_classes = len(encoder.classes_)
+#     model = build_and_train_model(X_train, y_train, X_val, y_val, num_classes)
+    
+#     # 6. Save Model and Preprocessors
+#     model.save(MODEL_SAVE_PATH)
+#     with open(SCALER_SAVE_PATH, 'wb') as f:
+#         pickle.dump(scaler, f)
+#     with open(ENCODER_SAVE_PATH, 'wb') as f:
+#         pickle.dump(encoder, f)
+        
+#     print(f"\n🎉 Success! Model saved to {MODEL_SAVE_PATH}")
+#     print(f"Scaler saved to {SCALER_SAVE_PATH}")
+#     print(f"Encoder saved to {ENCODER_SAVE_PATH}")
 import pandas as pd
-import tensorflow as tf
-from sklearn.model_selection import train_test_split
+import numpy as np
+import os
+import sys
+import json
+import pytz
 from sklearn.preprocessing import MinMaxScaler, LabelEncoder
+from sklearn.model_selection import train_test_split
+import tensorflow as tf
+from tensorflow.keras.models import Sequential
+from tensorflow.keras.layers import LSTM, Dense, Dropout
+from tensorflow.keras.callbacks import EarlyStopping
+import pickle
 
-# --- 1. Configuration (Using Absolute Paths) ---
-# Get the absolute path of the directory where this script is located
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+# --- Path Setup ---
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+PROJECT_ROOT = os.path.abspath(os.path.join(CURRENT_DIR, '..', '..'))
+DATA_DIR = os.path.join(PROJECT_ROOT, 'data')
 
-# Define absolute paths for all files to prevent errors
-DATA_PATH = os.path.join(SCRIPT_DIR, 'generated_training_data.csv')
-MODEL_SAVE_PATH = os.path.join(SCRIPT_DIR, 'lstm_energy_model.h5')
-ENCODER_PATH = os.path.join(SCRIPT_DIR, 'label_encoder.pkl')
-SCALER_PATH = os.path.join(SCRIPT_DIR, 'scaler.pkl')
+# --- Configuration ---
+GERMAN_TIMEZONE = pytz.timezone('Europe/Berlin')
+MODEL_SAVE_PATH = os.path.join(CURRENT_DIR, 'lstm_energy_model.h5')
+SCALER_SAVE_PATH = os.path.join(CURRENT_DIR, 'scaler.pkl')
+ENCODER_SAVE_PATH = os.path.join(CURRENT_DIR, 'label_encoder.pkl')
+SEQUENCE_LENGTH = 12  # Use 12 hours of data to predict the next hour
 
-SEQUENCE_LENGTH = 24  # Use 24 hours of past data to predict the next hour
+# --- Data Loading and Preprocessing ---
+def load_and_prepare_data():
+    price_file = os.path.join(DATA_DIR, "awattar_price_data.json")
+    weather_file = os.path.join(DATA_DIR, "weather_data.json")
 
-# --- 2. Load and Preprocess Data ---
-print(f"Loading data from: {DATA_PATH}")
-try:
-    df = pd.read_csv(DATA_PATH)
-except FileNotFoundError:
-    print(f"❌ ERROR: Cannot find the training data file at {DATA_PATH}")
-    print("Please make sure you have run 'python src/python_ml_dashboard/generate_dataset.py' first.")
-    exit()
+    if not os.path.exists(price_file) or not os.path.exists(weather_file):
+        print(f"❌ Error: Data files not found in '{DATA_DIR}'. Please run the data fetcher in the web app first.")
+        sys.exit(1)
 
-# Encode the 'action' labels into numbers
-label_encoder = LabelEncoder()
-df['action_encoded'] = label_encoder.fit_transform(df['action'])
-NUM_CLASSES = len(label_encoder.classes_)
-print(f"✅ Found {NUM_CLASSES} unique actions: {label_encoder.classes_}")
+    with open(price_file, 'r') as f:
+        price_data = json.load(f)['data']
+    price_df = pd.DataFrame(price_data)
+    price_df['timestamp'] = pd.to_datetime(price_df['start_timestamp'], unit='ms', utc=True).dt.tz_convert(GERMAN_TIMEZONE)
+    price_df['price_eur_kwh'] = price_df['marketprice'] / 1000.0
+    price_df = price_df.set_index('timestamp')[['price_eur_kwh']]
 
-# Scale numerical features to be between 0 and 1
-scaler = MinMaxScaler()
-df[['price', 'solar_potential']] = scaler.fit_transform(df[['price', 'solar_potential']])
+    with open(weather_file, 'r') as f:
+        forecast_days = json.load(f)['forecast']['forecastday']
+        hourly_data = []
+        for day in forecast_days:
+            hourly_data.extend(day['hour'])
+    
+    weather_df = pd.DataFrame(hourly_data)
+    weather_df['temp_c'] = weather_df['temp_c']
+    weather_df['weather_condition_text'] = weather_df['condition'].apply(lambda x: x['text'])
+    weather_df['timestamp'] = pd.to_datetime(weather_df['time_epoch'], unit='s', utc=True).dt.tz_convert(GERMAN_TIMEZONE)
+    weather_df = weather_df.set_index('timestamp')[['temp_c', 'weather_condition_text']]
+    
+    df = price_df.join(weather_df, how='inner').ffill().dropna()
+    
+    # --- THIS IS THE FIX ---
+    # Check if there's enough data *before* proceeding
+    if len(df) < SEQUENCE_LENGTH:
+        print(f"❌ Error: Not enough overlapping data to create a single training sequence.")
+        print(f"   Need at least {SEQUENCE_LENGTH} hours of data, but found only {len(df)}.")
+        print(f"   Please try fetching new data in the web app later.")
+        sys.exit(1)
+        
+    print("✅ Data loaded and merged successfully.")
+    return df
 
-# --- 3. Create Sequences for LSTM ---
-print(f"Creating sequences with length {SEQUENCE_LENGTH}...")
-features = df[['price', 'solar_potential']].values
-labels = df['action_encoded'].values
+def map_and_calculate_solar(df):
+    def map_condition(condition_text):
+        condition_text = condition_text.lower()
+        if 'sun' in condition_text or 'clear' in condition_text: return 'Clear'
+        if 'cloudy' in condition_text or 'overcast' in condition_text: return 'Clouds'
+        if 'rain' in condition_text or 'drizzle' in condition_text: return 'Rain'
+        if 'snow' in condition_text or 'sleet' in condition_text: return 'Snow'
+        if 'mist' in condition_text or 'fog' in condition_text: return 'Mist'
+        if 'thunder' in condition_text: return 'Thunderstorm'
+        return 'Clouds'
 
-X, y = [], []
-# Ensure we don't go out of bounds
-if len(features) <= SEQUENCE_LENGTH:
-    print("❌ ERROR: Not enough data to create even one sequence.")
-    print(f"You have {len(features)} rows of data but need at least {SEQUENCE_LENGTH + 1}.")
-    exit()
+    df['weather_condition'] = df['weather_condition_text'].apply(map_condition)
+    
+    max_solar_kw = 5.5
+    weather_coeffs = {'Clear': 1.0, 'Clouds': 0.6, 'Rain': 0.3, 'Mist': 0.35, 'Fog': 0.2, 'Snow': 0.25, 'Drizzle': 0.4, 'Thunderstorm': 0.1}
+    sunlight_factor = np.clip(np.sin(np.pi * (df.index.hour - 6) / 12), 0, 1)
+    weather_factor = df['weather_condition'].map(weather_coeffs).fillna(0.5)
+    df['solar_potential'] = max_solar_kw * sunlight_factor * weather_factor
+    print("✅ Solar potential calculated.")
+    return df
 
-for i in range(len(features) - SEQUENCE_LENGTH):
-    X.append(features[i:i + SEQUENCE_LENGTH])
-    y.append(labels[i + SEQUENCE_LENGTH])
+def create_labels(df):
+    conditions = [
+        (df['price_eur_kwh'] <= df['price_eur_kwh'].quantile(0.25)),
+        (df['price_eur_kwh'] >= df['price_eur_kwh'].quantile(0.80)) & (df['solar_potential'] >= df['solar_potential'].quantile(0.75)),
+        (df['solar_potential'] >= df['solar_potential'].quantile(0.75))
+    ]
+    choices = ['Charge EV', 'Sell to Grid', 'Charge Solar']
+    df['action'] = np.select(conditions, choices, default='Do Nothing')
+    print("✅ Target labels created.")
+    return df
 
-X = np.array(X)
-y = tf.keras.utils.to_categorical(y, num_classes=NUM_CLASSES) # One-hot encode labels
+def create_sequences(df, features, target, sequence_length):
+    X, y = [], []
+    for i in range(len(df) - sequence_length):
+        X.append(df[features].iloc[i:i + sequence_length].values)
+        y.append(df[target].iloc[i + sequence_length])
+    print(f"✅ Created {len(X)} sequences.")
+    return np.array(X), np.array(y)
 
-# --- 4. Split Data into Training and Validation Sets ---
-X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
-print(f"✅ Training data shape: {X_train.shape}")
-print(f"✅ Validation data shape: {X_val.shape}")
+def build_and_train_model(X_train, y_train_encoded, X_val, y_val_encoded, num_classes):
+    model = Sequential([
+        LSTM(units=50, return_sequences=True, input_shape=(X_train.shape[1], X_train.shape[2])),
+        Dropout(0.2),
+        LSTM(units=50),
+        Dropout(0.2),
+        Dense(units=25, activation='relu'),
+        Dense(units=num_classes, activation='softmax')
+    ])
+    
+    model.compile(optimizer='adam', loss='sparse_categorical_crossentropy', metrics=['accuracy'])
+    early_stopping = EarlyStopping(monitor='val_loss', patience=10, restore_best_weights=True)
+    
+    print("\n🚀 Starting model training...")
+    model.fit(
+        X_train, y_train_encoded,
+        epochs=50,
+        batch_size=32,
+        validation_data=(X_val, y_val_encoded),
+        callbacks=[early_stopping],
+        verbose=1
+    )
+    print("✅ Model training complete.")
+    return model
 
-# --- 5. Build the LSTM Model ---
-print("Building the LSTM model...")
-model = tf.keras.Sequential([
-    tf.keras.layers.LSTM(
-        units=50,
-        return_sequences=True,
-        input_shape=(X_train.shape[1], X_train.shape[2]) # (SEQUENCE_LENGTH, num_features)
-    ),
-    tf.keras.layers.Dropout(0.2),
-    tf.keras.layers.LSTM(units=50),
-    tf.keras.layers.Dropout(0.2),
-    tf.keras.layers.Dense(units=30, activation='relu'),
-    tf.keras.layers.Dense(NUM_CLASSES, activation='softmax') # Output layer: probabilities for each action
-])
-
-model.compile(
-    optimizer='adam',
-    loss='categorical_crossentropy',
-    metrics=['accuracy']
-)
-model.summary()
-
-# --- 6. Train the Model ---
-print("\n--- 🧠 Starting Model Training ---")
-history = model.fit(
-    X_train, y_train,
-    epochs=50, # Adjust as needed
-    batch_size=32,
-    validation_data=(X_val, y_val),
-    verbose=1
-)
-print("--- ✅ Model Training Complete ---")
-
-# --- 7. Save the Trained Model and Preprocessors ---
-print(f"Saving model to {MODEL_SAVE_PATH}...")
-model.save(MODEL_SAVE_PATH)
-
-print(f"Saving label encoder to {ENCODER_PATH}...")
-with open(ENCODER_PATH, 'wb') as f:
-    pickle.dump(label_encoder, f)
-
-print(f"Saving scaler to {SCALER_PATH}...")
-with open(SCALER_PATH, 'wb') as f:
-    pickle.dump(scaler, f)
-
-print("\n--- 🎉 All files saved! ---")
-print("Next, you'll need to update 'ml_model.py' to use these new paths.")
+# --- Main Execution ---
+if __name__ == "__main__":
+    main_df = load_and_prepare_data()
+    main_df = map_and_calculate_solar(main_df)
+    main_df = create_labels(main_df)
+    
+    features_to_scale = ['price_eur_kwh', 'solar_potential']
+    scaler = MinMaxScaler()
+    main_df[features_to_scale] = scaler.fit_transform(main_df[features_to_scale])
+    
+    encoder = LabelEncoder()
+    main_df['action_encoded'] = encoder.fit_transform(main_df['action'])
+    
+    X, y = create_sequences(main_df, features_to_scale, 'action_encoded', SEQUENCE_LENGTH)
+    
+    X_train, X_val, y_train, y_val = train_test_split(X, y, test_size=0.2, random_state=42)
+    print(f"Data split: {len(X_train)} training samples, {len(X_val)} validation samples.")
+    
+    num_classes = len(encoder.classes_)
+    model = build_and_train_model(X_train, y_train, X_val, y_val, num_classes)
+    
+    model.save(MODEL_SAVE_PATH)
+    with open(SCALER_SAVE_PATH, 'wb') as f:
+        pickle.dump(scaler, f)
+    with open(ENCODER_SAVE_PATH, 'wb') as f:
+        pickle.dump(encoder, f)
+        
+    print(f"\n🎉 Success! Model and preprocessors saved.")
