@@ -38,111 +38,71 @@
 #         df_rec.loc[hour, 'reason'] = "Good time for appliances due to high solar generation."
             
 #     return df_rec
-import pandas as pd
-import numpy as np
-import tensorflow as tf
+import os
 import pickle
+import numpy as np
+import pandas as pd
+import tensorflow as tf
 
-# --- 1. Load the trained model and preprocessors ---
+# --- 1. Configuration (Using Absolute Paths) ---
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+MODEL_PATH = os.path.join(SCRIPT_DIR, 'lstm_energy_model.h5')
+ENCODER_PATH = os.path.join(SCRIPT_DIR, 'label_encoder.pkl')
+SCALER_PATH = os.path.join(SCRIPT_DIR, 'scaler.pkl')
+
+# --- 2. Load the Trained Model and Preprocessors ---
 try:
-    MODEL = tf.keras.models.load_model('src/python_ml_dashboard/lstm_energy_model.h5')
-    with open('src/python_ml_dashboard/label_encoder.pkl', 'rb') as f:
+    print("Attempting to load the LSTM model and preprocessors...")
+    MODEL = tf.keras.models.load_model(MODEL_PATH)
+    with open(ENCODER_PATH, 'rb') as f:
         LABEL_ENCODER = pickle.load(f)
-    with open('src/python_ml_dashboard/scaler.pkl', 'rb') as f:
+    with open(SCALER_PATH, 'rb') as f:
         SCALER = pickle.load(f)
-    SEQUENCE_LENGTH = MODEL.input_shape[1] # Get sequence length from model's input shape (e.g., 24)
-    print("LSTM model and preprocessors loaded successfully.")
+    SEQUENCE_LENGTH = MODEL.input_shape[1]
+    print("✅ Model and preprocessors loaded successfully.")
 except Exception as e:
-    print(f"Error loading model: {e}. Falling back to rule-based system.")
+    print(f"❌ Critical Error loading model: {e}")
+    print("Falling back to a simple rule-based system. Please check your model files.")
     MODEL = None
 
-# --- Original Rule-Based Function (as a fallback) ---
-def get_recommendation_rule_based(hour_data):
-    """The original rule-based logic."""
-    price = hour_data['price']
-    solar = hour_data['solar_potential']
+def predict_with_lstm(data_sequence):
+    """Predicts the action for a single sequence of historical data."""
+    # Scale the features
+    scaled_sequence = SCALER.transform(data_sequence[['price', 'solar_potential']])
     
-    # Define price thresholds based on the entire day's price data
-    price_quantile_15 = hour_data['price_quantile_15']
-    price_quantile_25 = hour_data['price_quantile_25']
+    # Reshape for the model: (1, sequence_length, num_features)
+    reshaped_sequence = np.array([scaled_sequence])
+    
+    # Predict probabilities and get the most likely action
+    prediction_probs = MODEL.predict(reshaped_sequence)[0]
+    predicted_index = np.argmax(prediction_probs)
+    
+    # Convert the numerical prediction back to a human-readable action
+    return LABEL_ENCODER.inverse_transform([predicted_index])[0]
 
-    if solar > 0.7:
-        return "Sell to Grid"
-    elif solar > 0.5:
-        return "Run Dishwasher"
-    elif price < price_quantile_15:
-        return "Charge EV"
-    elif price < price_quantile_25:
-        return "Run Washing Machine"
-    else:
-        return "Do Nothing"
-
-# --- 2. New Function to use the LSTM Model ---
-def predict_with_lstm(historical_data, future_data):
-    """
-    Uses the trained LSTM model to predict actions for the future hours.
-    
-    :param historical_data: A DataFrame with the last SEQUENCE_LENGTH hours of data.
-    :param future_data: A DataFrame with the future hours we want to predict.
-    :return: A list of recommended actions.
-    """
-    if not MODEL:
-        # Fallback if model failed to load
-        return [get_recommendation_rule_based(row) for _, row in future_data.iterrows()]
-
-    # Scale the features using the same scaler from training
-    scaled_features = SCALER.transform(historical_data[['price', 'solar_potential']])
-    
-    # Reshape into a single sequence sample: (1, SEQUENCE_LENGTH, num_features)
-    sequence = np.array([scaled_features])
-    
-    # Predict the probability of each action
-    prediction_probabilities = MODEL.predict(sequence)[0]
-    
-    # Get the index of the action with the highest probability
-    predicted_index = np.argmax(prediction_probabilities)
-    
-    # Decode the index back to the action name (e.g., "Charge EV")
-    predicted_action = LABEL_ENCODER.inverse_transform([predicted_index])[0]
-    
-    # For this example, we'll apply the same prediction to all future hours.
-    # A more advanced implementation would predict one hour at a time in a loop.
-    return [predicted_action] * len(future_data)
-
-
-# --- 3. Main Function (Updated) ---
 def predict_future_energy_profile(df, working_hours_start, working_hours_end):
     """
-    Processes data and decides whether to use the LSTM model or the rule-based system.
+    Processes the full dataframe to generate recommendations for each hour.
     """
     df_copy = df.copy()
     
-    # Calculate price quantiles for the rule-based fallback
-    df_copy['price_quantile_15'] = df_copy['price'].quantile(0.15)
-    df_copy['price_quantile_25'] = df_copy['price'].quantile(0.25)
-    
-    # --- Integration Logic ---
-    if MODEL and len(df_copy) >= SEQUENCE_LENGTH:
-        print("Sufficient data found. Using LSTM model for predictions.")
-        # We need historical data to predict the future.
-        # We'll use the first `SEQUENCE_LENGTH` rows as our "history" to predict the rest.
-        historical_data = df_copy.iloc[:SEQUENCE_LENGTH]
-        future_data = df_copy.iloc[SEQUENCE_LENGTH:]
+    # Check if the model is loaded and if there's enough data
+    if MODEL and len(df_copy) > SEQUENCE_LENGTH:
+        print("Sufficient data available. Using LSTM model for predictions.")
+        recommendations = []
+        # Iterate through each hour that can be predicted
+        for i in range(len(df_copy) - SEQUENCE_LENGTH):
+            # The input sequence is the 24 hours *before* the hour we want to predict
+            input_sequence = df_copy.iloc[i:i + SEQUENCE_LENGTH]
+            prediction = predict_with_lstm(input_sequence)
+            recommendations.append(prediction)
         
-        # If there are future hours to predict, use the model
-        if not future_data.empty:
-            # For simplicity, we'll use the same prediction for all future hours based on one look-back period.
-            # A more robust solution would slide the window and predict one hour at a time.
-            recommendations = predict_with_lstm(historical_data, future_data)
-            df_copy.loc[SEQUENCE_LENGTH:, 'recommendation'] = recommendations
-            # For the historical part, we can fill with a default value or run rule-based logic
-            df_copy.loc[:SEQUENCE_LENGTH, 'recommendation'] = 'No Prediction'
-        else:
-            # If not enough data for a future prediction, use rule-based for all
-            df_copy['recommendation'] = df_copy.apply(get_recommendation_rule_based, axis=1)
-
+        # Add a placeholder for the initial hours that can't be predicted
+        initial_placeholders = ['Awaiting more data'] * SEQUENCE_LENGTH
+        df_copy['recommendation'] = initial_placeholders + recommendations
     else:
-        print("Insufficient data for LSTM or model not loaded. Using rule-based system.")
-        df_copy['recommendation'] = df_copy.apply(get_recommendation_rule_based, axis=1)
+        # Fallback message if model isn't loaded or data is insufficient
+        print("Insufficient data for LSTM or model not loaded. No recommendations generated.")
+        df_copy['recommendation'] = 'Not enough data'
         
     return df_copy
