@@ -104,8 +104,8 @@ echo "--- Starting Comprehensive Build and Run Script ---"
 
 # --- 0. Safeguard: Deactivate any existing venv or conda env ---
 # This ensures a clean environment before activating our target venv.
-unset OPENWEATHER_API_KEY
-echo "Unset OPENWEATHER_API_KEY from current shell environment to ensure fresh load from .env"
+unset WEATHERAPI_API_KEY
+echo "Unset WEATHERAPI_API_KEY from current shell environment to ensure fresh load from .env"
 
 # Conda deactivation logic
 if [ -n "$CONDA_PREFIX" ]; then
@@ -181,7 +181,7 @@ echo "Unset LDFLAGS and CFLAGS."
 echo "Cleaning all Python __pycache__ directories..."
 find . -depth -name "__pycache__" -exec rm -rf {} \;
 echo "Cleaning old Rust build artifacts..."
-cargo clean --manifest-path src/rust_data_collector/Cargo.toml
+# cargo clean --manifest-path src/rust_data_collector/Cargo.toml
 
 # --- 4. Remove any potentially misleading Python files (safe version) ---
 # This prevents Python from importing a .py file instead of our compiled .so module.
