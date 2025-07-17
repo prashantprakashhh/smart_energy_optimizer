@@ -551,62 +551,43 @@ def display_enhanced_action_plan(df):
     
     with tab4:
         st.subheader("📋 Detailed Forecast Data")
-        
-        # Prepare display dataframe
+
+        # --- FIX IS APPLIED IN THIS TAB ---
+        # 1. Prepare a DataFrame for display, but keep its original index for now.
         display_columns = ['temp', 'weather_condition', 'price_eur_kwh', 'solar_potential']
-        
-        # Add recommendation columns
         for appliance in APPLIANCES.keys():
-            rec_col = f'{appliance}_recommendation'
-            if rec_col in df.columns:
-                display_columns.append(rec_col)
-        
-        # Add cost columns
-        for appliance in APPLIANCES.keys():
-            cost_col = f'{appliance}_cost'
-            if cost_col in df.columns:
-                display_columns.append(cost_col)
+            for col_type in ['_recommendation', '_cost']:
+                col_name = f'{appliance}{col_type}'
+                if col_name in df.columns:
+                    display_columns.append(col_name)
         
         display_df = df[display_columns].copy()
-        display_df.index = display_df.index.strftime('%a %d %b, %H:%M')
-        
-        # Create formatting dictionary
-        format_dict = {
-            "temp": "{:.1f}°C",
-            "price_eur_kwh": "€{:.3f}/kWh",
-            "solar_potential": "{:.2f} kW"
-        }
-        
-        # Add cost column formatting
-        for appliance in APPLIANCES.keys():
-            cost_col = f'{appliance}_cost'
-            if cost_col in display_columns:
-                format_dict[cost_col] = "€{:.2f}"
-        
-        # Display with filtering options
+
+        # 2. Handle filtering options using boolean masks on the original index.
         st.write("**Filter by recommendation:**")
         filter_option = st.selectbox(
             "Show only:",
             ["All times", "Optimal times only", "Times to avoid"],
             key="detail_filter"
         )
-        
+
         if filter_option == "Optimal times only":
-            # Show only rows where at least one appliance has 'Optimal' recommendation
-            optimal_mask = False
+            # Initialize mask as a Series with the correct index
+            optimal_mask = pd.Series(False, index=df.index)
             for appliance in APPLIANCES.keys():
                 rec_col = f'{appliance}_recommendation'
                 if rec_col in df.columns:
+                    # Combine masks safely
                     optimal_mask = optimal_mask | (df[rec_col] == 'Optimal')
             
             if optimal_mask.any():
                 display_df = display_df[optimal_mask]
             else:
-                st.info("No optimal times found in current forecast")
-        
+                st.info("No optimal times found in current forecast.")
+                display_df = display_df.iloc[0:0] # Show empty frame
+
         elif filter_option == "Times to avoid":
-            # Show only rows where at least one appliance has 'Avoid' recommendation
-            avoid_mask = False
+            avoid_mask = pd.Series(False, index=df.index)
             for appliance in APPLIANCES.keys():
                 rec_col = f'{appliance}_recommendation'
                 if rec_col in df.columns:
@@ -615,26 +596,36 @@ def display_enhanced_action_plan(df):
             if avoid_mask.any():
                 display_df = display_df[avoid_mask]
             else:
-                st.info("No times to avoid identified in current forecast")
+                st.info("No times to avoid identified in current forecast.")
+                display_df = display_df.iloc[0:0] # Show empty frame
         
-        # Apply styling
-        styled_df = display_df.style.format(format_dict)
+        # 3. NOW that filtering is done, format the index for display.
+        if not display_df.empty:
+            display_df.index = display_df.index.strftime('%a %d %b, %H:%M')
+
+        # 4. Apply formatting and styling for the final output.
+        format_dict = {
+            "temp": "{:.1f}°C",
+            "price_eur_kwh": "€{:.3f}/kWh",
+            "solar_potential": "{:.2f} kW"
+        }
+        for appliance in APPLIANCES.keys():
+            cost_col = f'{appliance}_cost'
+            if cost_col in display_df.columns:
+                format_dict[cost_col] = "€{:.2f}"
         
-        # Highlight optimal and avoid times
         def highlight_recommendations(val):
-            if val == 'Optimal':
-                return 'background-color: #90EE90'  # Light green
-            elif val == 'Avoid':
-                return 'background-color: #FFB6C1'  # Light red
+            if val == 'Optimal': return 'background-color: #90EE90'
+            elif val == 'Avoid': return 'background-color: #FFB6C1'
             return ''
-        
+
+        styled_df = display_df.style.format(format_dict)
         for appliance in APPLIANCES.keys():
             rec_col = f'{appliance}_recommendation'
             if rec_col in display_df.columns:
                 styled_df = styled_df.applymap(highlight_recommendations, subset=[rec_col])
         
         st.dataframe(styled_df, use_container_width=True)
-
 # --- Main App ---
 st.title("💡 AI Smart Energy Optimizer")
 st.markdown("*Optimize your home energy usage with AI-powered predictions*")
