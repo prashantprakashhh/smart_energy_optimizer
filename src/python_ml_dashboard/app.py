@@ -506,20 +506,6 @@ def display_enhanced_action_plan(df):
                       line=dict(color='orange', width=2)),
             row=1, col=1, secondary_y=True
         )
-        
-        # Add optimal times as vertical lines
-        # colors = ['green', 'blue', 'purple', 'brown', 'pink']
-        # for i, (appliance, config) in enumerate(APPLIANCES.items()):
-        #     rec_col = f'{appliance}_recommendation'
-        #     if rec_col in df.columns:
-        #         optimal_times = df[df[rec_col] == 'Optimal']
-        #         if not optimal_times.empty:
-        #             for time in optimal_times.index[:2]:  # Show first 2 optimal times
-        #                 fig.add_vline(x=time.isoformat(), line_dash="dash", line_color=colors[i % len(colors)], 
-        #                             annotation_text=f"{config['icon']} {appliance}", 
-        #                             annotation_position="top")
-        
-        # Recommendations scatter plot
         y_pos = 0
 
         colors = ['green', 'blue', 'purple', 'brown', 'pink'] 
