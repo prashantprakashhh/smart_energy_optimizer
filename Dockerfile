@@ -1,10 +1,12 @@
 # Use Python as the base image
 FROM python:3.10-slim
 
-# Install system dependencies (needed for Rust and Python packages)
+# Install system dependencies (updated to include OpenSSL and pkg-config)
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
+    pkg-config \
+    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Rust (needed to compile your data collector)
@@ -27,8 +29,8 @@ COPY . .
 WORKDIR /app/src/rust_data_collector
 RUN cargo build --release
 
-# Move the compiled Rust library to the Python site-packages (or local folder)
-# We move it to the dashboard folder so app.py can find it locally
+# Move the compiled Rust library to the dashboard folder
+# We check for both .so and .dylib extensions just in case
 RUN cp target/release/librust_data_collector.so /app/src/python_ml_dashboard/rust_data_collector.so || \
     cp target/release/librust_data_collector.dylib /app/src/python_ml_dashboard/rust_data_collector.so || \
     echo "Warning: check rust output name"
